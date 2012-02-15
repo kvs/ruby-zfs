@@ -46,6 +46,10 @@ class ZFS
 		ZFS.invalidate(name)
 	end
 
+	def ==(other)
+		other.class == self.class && other.name == self.name
+	end
+
 	# set/get/inherit - []?
 	# mount!/unmount!
 	# share/unshare
