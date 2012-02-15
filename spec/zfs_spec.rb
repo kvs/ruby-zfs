@@ -56,7 +56,6 @@ describe ZFS::Filesystem do
     fs2 = ZFS.create('tank/fs1')
     fs.should be_valid
     fs.should eq fs2
-    fs.object_id.should eq fs2.object_id
     fs.destroy!
     fs.should_not be_valid
   end
@@ -119,5 +118,33 @@ describe ZFS::Filesystem do
 
   it "should fail when attempting to create an existing filesystem" do
     expect { ZFS.create('tank/fs1') }.to raise_error("filesystem already exists")
+  end
+end
+
+describe ZFS::Filesystem do
+  it "supports renames" do
+    fs = ZFS.create('tank/fs1')
+    fs.rename!('tank/fs2')
+    fs.should eq ZFS['tank/fs2']
+    ZFS['tank/fs1'].should be_nil
+    fs.destroy!
+    fs.should_not be_valid
+    ZFS['tank/fs2'].should be_nil
+  end
+end
+
+describe ZFS::Snapshot do
+  it "supports renames" do
+    fs = ZFS.create('tank/fs1')
+    snapshot = fs.snapshot!('snap1')
+    fs.snapshots.should eq [ZFS['tank/fs1@snap1']]
+
+    snapshot.rename!('snap2')
+    fs.snapshots.should eq [ZFS['tank/fs1@snap2']]
+
+    snapshot.destroy!
+    fs.snapshots.should eq []
+
+    fs.destroy!
   end
 end

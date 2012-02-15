@@ -27,16 +27,12 @@ class ZFS
 		puts "Unimplemented."
 	end
 
-	# FIXME: walk through all filesystems (ZFS.properties), and find the ones where the 'origin' property
-	#        matches +name+.
-	# def clones
-	# end
-
-	# FIXME: -p, -r
-	# FIXME: rename this instance, and make sure it is renamed in ZFS.properties, too.
-	# FIXME: check that +newname+ doesn't exist.
-	# def rename!(newname)
-	# end
+	def rename!(newname)
+		raise Exception, "target already exists" if ZFS[newname]
+		system(*CMD_PREFIX, "rename", name, newname)
+		ZFS.invalidate(name)
+		initialize(newname)
+	end
 
 	# FIXME: better exception
 	# FIXME: fails if there are snapshots or children - -r/-R?
@@ -62,6 +58,7 @@ end
 module ZFS::Snapshots
 	def snapshot!(snapname)
 		raise Exception, "filesystem has been deleted" if !valid?
+		raise Exception, "snapshot already exists" unless snapshots.grep(snapname).empty?
 
 		system(*CMD_PREFIX, "snapshot", "#{name}@#{snapname}")
 		ZFS.invalidate(name)
@@ -96,6 +93,16 @@ class ZFS::Snapshot < ZFS
 		ZFS.invalidate(clone)
 		ZFS[clone]
 	end
+
+	def rename!(newname)
+		raise Exception, "invalid new name" if newname.match('/')
+		super(name.gsub(/@.+$/, "@#{newname}"))
+	end
+
+	# FIXME: walk through all filesystems (ZFS.properties), and find the ones where the 'origin' property
+	#        matches +name+.
+	# def clones
+	# end
 end
 
 class ZFS::Volume < ZFS
@@ -116,6 +123,12 @@ class ZFS::Filesystem < ZFS
 		system(*CMD_PREFIX, "create", fs)
 		ZFS.invalidate(name)
 		ZFS[fs]
+	end
+
+	def rename!(newname)
+		raise Exception, "invalid new name" if newname.match('@')
+		raise Exception, "must be in same pool" unless newname.match(/^#{pool}\//)
+		super(newname)
 	end
 end
 
