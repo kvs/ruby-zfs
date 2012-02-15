@@ -1,0 +1,190 @@
+require 'pathname'
+
+#CMD_PREFIX=%w(ssh kenneth@cantor.pil.dk sudo /sbin/zfs)
+CMD_PREFIX=%w(ssh vagrant-zfs sudo zfs)
+# TODO:
+# * a ZFS baseclass, with Filesystem, Snapshot and Volume subclasses, so "destroy!", "rename!" and properties can be common
+
+class ZFS
+	attr_reader :name
+	attr_reader :pool
+	attr_reader :path
+
+	def initialize(name)
+		if ZFS.properties[name].nil?
+			raise ArgumentError, "non-existant filesystem '#{name}'"
+		end
+		@name, @pool, @path = name, name.split('/', 2)
+		@deleted = false
+	end
+
+	def to_s
+		"#<ZFS:#{name}>"
+	end
+
+	# FIXME: check for existing filesystem
+	def create(subname)
+		fs = "#{name}/#{subname}"
+		system(*CMD_PREFIX, "create", fs)
+		ZFS.properties(true)
+		ZFS[fs]
+	end
+
+	def snapshot!(snapname)
+		raise Exception, "filesystem has been deleted" if @deleted
+
+		system(*CMD_PREFIX, "snapshot", "#{name}@#{snapname}")
+		snapshots(true).find { |f| f.name == "#{name}@#{snapname}" }
+	end
+
+	def snapshots(reload=false)
+		raise Exception, "filesystem has been deleted" if @deleted
+
+		if @snapshots.nil? or reload
+			@snapshots = []
+			IO.popen([*CMD_PREFIX, "list", "-Hd1", "-tsnapshot", "-oname", name]) do |pipe|
+				pipe.lines.each do |snapshot|
+					@snapshots << Snapshot.new(snapshot.chomp)
+				end
+			end
+		end
+
+		@snapshots
+	end
+
+	def [](key)
+		ZFS.properties[name][key]
+	end
+
+	def []=(key, value)
+		puts "Unimplemented."
+	end
+
+	# FIXME: walk through all filesystems (ZFS.properties), and find the ones where the 'origin' property
+	#        matches +name+.
+	# def clones
+	# end
+
+	# FIXME: check that self is indeed a clone-fs
+	# FIXME: origin-fs loses a snapshot, and gets its own origin altered, so reload properties+snapshots for it, too.
+	def promote!
+		raise Exception, "filesystem is not a clone" if self['origin'] == '-'
+		system(*CMD_PREFIX, "promote", name)
+		ZFS.properties(true)
+		snapshots(true)
+	end
+
+	# FIXME: -p, -r
+	# FIXME: rename this instance, and make sure it is renamed in ZFS.properties, too.
+	# FIXME: check that +newname+ doesn't exist.
+	# def rename!(newname)
+	# end
+
+	# FIXME: better exception
+	# FIXME: fails if there are snapshots or children - -r/-R?
+	def destroy!
+		raise Exception, "filesystem has already been deleted" if @deleted
+		system(*CMD_PREFIX, "destroy", name)
+		ZFS.properties(true)
+		@deleted = true
+	end
+
+	# set/get/inherit - []?
+	# mount!/unmount!
+	# share/unshare
+	# send
+	# receive
+
+	class Snapshot
+		attr_reader :name
+
+		def initialize(name)
+			@name, @parent, @snapname = name, *name.split('@', 2)
+			@deleted = false
+		end
+
+		# FIXME: check for errors in +clone+ (pool must be identical to snapshot, for instance, and fs must not already exist)
+		# FIXME: better Exception
+		def clone!(clone)
+			raise Exception, "snapshot has been deleted" if @deleted
+
+			system(*CMD_PREFIX, "clone", name, clone)
+			ZFS.properties(true)
+			ZFS[clone]
+		end
+
+		# FIXME: better exception
+		# FIXME: fails if there are clones
+		def destroy!
+			raise Exception, "snapshot has already been deleted" if @deleted
+			system(*CMD_PREFIX, "destroy", name)
+			ZFS[@parent].snapshots(true)
+			@deleted = true
+		end
+	end
+end
+
+class << ZFS
+	include Enumerable
+
+	# ZFS should not be instantiated by user
+	private :new
+
+	def fs_for_path(path)
+		@cached_zfs_instances ||= {}
+
+		fs = @cached_zfs_instances[path] || new(path)
+		@cached_zfs_instances[path] = fs unless fs.nil?
+		fs
+	end
+
+	def properties(reload=false)
+		if @properties.nil? or reload
+			@properties = {}
+			IO.popen([*CMD_PREFIX, "get", "-oname,property,value", "-Hpr", "all"]) do |pipe|
+				pipe.lines.each do |attrs|
+					name, property, value = attrs.split(/\t/, 3)
+					@properties[name] ||= {}
+					@properties[name][property] = value.chomp
+				end
+			end
+		end
+
+		@properties
+	end
+
+	# FIXME: excludes all filesystems where jailed == on. Is this right?
+	# FIXME: 'jailed' is FreeBSD-specific, where 'zoned' is the upstream name. Detect?
+	def mountpoints
+		Hash[properties.find_all { |fs, props| props['jailed'] != 'on' }.collect { |fs, props| [ props['mountpoint'], fs_for_path(fs) ] }]
+	end
+
+	def filesystems
+		properties.collect { |fs, props| fs_for_path(fs) }
+	end
+
+	def [](path, find_parent=false)
+		if path[0] == '/'
+			path = Pathname(path).cleanpath
+			fs = mountpoints[path.to_s]
+
+			if fs.nil?
+				if find_parent
+					while !path.root?
+						return mountpoints[path.to_s] unless mountpoints[path.to_s].nil?
+						path = path.parent
+					end
+					return nil
+				end
+			else
+				return fs
+			end
+		else
+			fs_for_path(path)
+		end
+	end
+
+	def each(&block)
+		filesystems.each(&block)
+	end
+end

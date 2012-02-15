@@ -1,0 +1,5 @@
+.bundle
+.vagrant
+Gemfile.lock
+backup.sublime-*
+test.rb
