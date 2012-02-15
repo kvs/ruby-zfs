@@ -116,4 +116,8 @@ describe ZFS::Filesystem do
     snapshot.destroy!
     subject.snapshots.should eq []
   end
+
+  it "should fail when attempting to create an existing filesystem" do
+    expect { ZFS.create('tank/fs1') }.to raise_error("filesystem already exists")
+  end
 end

@@ -103,9 +103,12 @@ end
 class ZFS::Filesystem < ZFS
 	include ZFS::Snapshots
 
-	# FIXME: check for existing filesystem
+	# Create filesystem
 	def create(subname)
 		fs = "#{name}/#{subname}"
+
+		raise Exception, "filesystem already exists" if ZFS[fs]
+
 		system(*CMD_PREFIX, "create", fs)
 		ZFS.invalidate(name)
 		ZFS[fs]
