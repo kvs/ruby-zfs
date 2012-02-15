@@ -8,7 +8,7 @@ class ZFS
 	attr_reader :path
 
 	def initialize(name)
-		@name, @pool, @path = name, name.split('/', 2)
+		@name, @pool, @path = name, *name.split('/', 2)
 	end
 
 	def to_s
