@@ -170,27 +170,20 @@ class << ZFS
 
 			fs.nil? ? nil : fs[1]
 		else
-			@zfs ||= {}
-
 			props = self.properties(path)
-			fs = nil
 
 			return nil if props.nil?
-			return @zfs[path] if @zfs.has_key?(path)
 
 			case props['type']
 			when 'filesystem';
-				fs = ZFS::Filesystem.new(path)
+				ZFS::Filesystem.new(path)
 			when 'snapshot';
-				fs = ZFS::Snapshot.new(path)
+				ZFS::Snapshot.new(path)
 			when 'volume';
-				fs = ZFS::Volume.new(path)
+				ZFS::Volume.new(path)
 			else
 				raise Exception, "Unknown filesystem type '#{props['type']}'"
 			end
-
-			@zfs[path] = fs unless fs.nil?
-			fs
 		end
 	end
 
