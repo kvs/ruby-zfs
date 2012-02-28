@@ -57,7 +57,8 @@ class ZFS
 
 			when :snapshot
 				define_method name do
-					ZFS[get(name)]
+					val = get(name)
+					val.nil? ? nil : ZFS[val]
 				end
 
 			when :float
