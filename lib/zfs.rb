@@ -163,6 +163,7 @@ class ZFS
 		end
 
 		# Enumerator for all filesystems in all pools.
+		# FIXME: also iterates through snapshots and volumes, which we might not want.
 		def filesystems
 			if !block_given?
 				enum_for(:filesystems)
