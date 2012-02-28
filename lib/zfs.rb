@@ -332,10 +332,13 @@ module ZFS::Snapshots
 	# FIXME: check that self is indeed a clone-fs
 	# FIXME: origin-fs loses a snapshot, and gets its own origin altered, so reload properties+snapshots for it, too.
 	def promote!
-		raise Exception, "filesystem is not a clone" if self['origin'] == '-'
+		raise Exception, "filesystem is not a clone" if self.origin.nil?
+		old_origin = self.origin.name
+
 		system(*CMD_PREFIX, "promote", name)
+
 		ZFS.invalidate(name)
-		ZFS.invalidate(self['origin'])
+		ZFS.invalidate(old_origin)
 	end
 end
 
