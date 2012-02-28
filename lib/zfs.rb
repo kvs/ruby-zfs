@@ -378,8 +378,11 @@ class ZFS::Snapshot < ZFS
 		cmd << '-D' if opts[:dedup]
 		cmd << name
 
-		#system([*CMD_PREFIX, "send", *cmd, "|", *CMD_PREFIX, "receive", dest.name].join(' ')) # FIXME: can't specify
-		system([*CMD_PREFIX, "send", *cmd, "|", *CMD_PREFIX, "receive", "-d", dest.name].join(' '))
+		dest = dest.name unless dest.is_a? String
+
+		system([*CMD_PREFIX, "send", *cmd, "|", *CMD_PREFIX, "receive", dest].join(' '))
+
+		ZFS.invalidate(dest)
 	end
 end
 
