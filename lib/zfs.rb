@@ -309,11 +309,15 @@ end
 
 
 module ZFS::Snapshots
-	def snapshot!(snapname)
+	def snapshot!(snapname, opts={})
 		raise Exception, "filesystem has been deleted" if !valid?
 		raise Exception, "snapshot already exists" unless snapshots.grep(snapname).empty?
 
-		system(*CMD_PREFIX, "snapshot", "#{name}@#{snapname}")
+		if opts[:recursive]
+			system(*CMD_PREFIX, "snapshot", "-r", "#{name}@#{snapname}")
+		else
+			system(*CMD_PREFIX, "snapshot", "#{name}@#{snapname}")
+		end
 		ZFS.invalidate(name)
 		ZFS["#{name}@#{snapname}"]
 	end
