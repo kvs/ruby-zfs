@@ -81,6 +81,14 @@ class ZFS
 					DateTime.strptime(get(name), '%s')
 				end
 
+			when :pathname
+				define_method name do
+					Pathname(get(name))
+				end
+				define_method "#{name}=" do |value|
+					set(name, value.to_s)
+				end if opts[:edit]
+
 			else
 				puts "Unknown type '#{opts[:type]}'"
 			end
@@ -215,7 +223,7 @@ class ZFS
 	attribute :exec,                 type: :boolean, edit: true, inherit: true
 	attribute :logbias,              type: :enum,    edit: true, inherit: true, values: [:latency, :throughput]
 	attribute :mlslabel,             type: :string,  edit: true, inherit: true
-	attribute :mountpoint,           type: :string,  edit: true, inherit: true
+	attribute :mountpoint,           type: :pathname,edit: true, inherit: true
 	attribute :nbmand,               type: :boolean, edit: true, inherit: true
 	attribute :primarycache,         type: :enum,    edit: true, inherit: true, values: [:all, :none, :metadata]
 	attribute :quota,                type: :size,    edit: true,                values: [:none]

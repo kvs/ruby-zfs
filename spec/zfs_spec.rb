@@ -81,7 +81,10 @@ describe ZFS do
   it "should support custom properties"
 
   describe ZFS::Filesystem do
-    it "should convert 'mountpoint' to Pathname"
+    it "should convert 'mountpoint' to Pathname" do
+      ZFS['tank'].mountpoint.should eq Pathname("/tank")
+    end
+
     it "should convert 'origin' to a ZFS::Filesystem on clones"
   end
 end
