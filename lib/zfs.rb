@@ -367,7 +367,9 @@ class ZFS::Snapshot < ZFS
 	# send
 
 	def send_to(dest, opts={})
-		cmd = []
+		send_opts = []
+		receive_opts = []
+
 		incr_snap = nil
 
 		if opts[:incremental] and opts[:intermediary]
@@ -381,15 +383,19 @@ class ZFS::Snapshot < ZFS
 			# FIXME: must verify that incr_snap is the latest snapshot at +dest+
 		end
 
-		cmd.concat ['-i', incr_snap] if opts[:incremental]
-		cmd.concat ['-I', incr_snap] if opts[:intermediary]
-		cmd << '-R' if opts[:replication]
-		cmd << '-D' if opts[:dedup]
-		cmd << name
+		send_opts.concat ['-i', incr_snap] if opts[:incremental]
+		send_opts.concat ['-I', incr_snap] if opts[:intermediary]
+		send_opts << '-R' if opts[:replication]
+		send_opts << '-D' if opts[:dedup]
+		send_opts << name
+
+		receive_opts << '-F' if opts[:force]
+		receive_opts << '-d' if opts[:remote_name]
+		receive_opts << dest
 
 		dest = dest.name unless dest.is_a? String
 
-		system([*CMD_PREFIX, "send", *cmd, "|", *CMD_PREFIX, "receive", dest].join(' '))
+		system([*CMD_PREFIX, "send", *send_opts, "|", *CMD_PREFIX, "receive", *receive_opts].join(' '))
 
 		ZFS.invalidate(dest)
 	end
