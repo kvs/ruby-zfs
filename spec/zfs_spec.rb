@@ -61,6 +61,31 @@ describe ZFS::Filesystem do
   end
 end
 
+# Basic properties
+describe ZFS do
+  it "should support getting properties" do
+    fs = ZFS['tank']
+    fs.type.should eq :filesystem
+  end
+
+  it "should support setting properties"
+  it "should convert on/off to true/false, and vice-versa" do
+    ZFS['tank'].readonly?.should be_false
+    ZFS['tank'].canmount?.should be_true
+  end
+
+  it "should convert 'creation' to DateTime" do
+    ZFS['tank'].creation.should be_an_instance_of DateTime
+  end
+
+  it "should support custom properties"
+
+  describe ZFS::Filesystem do
+    it "should convert 'mountpoint' to Pathname"
+    it "should convert 'origin' to a ZFS::Filesystem on clones"
+  end
+end
+
 # Tests with more filesystems
 describe ZFS::Filesystem do
   include_context "scratch-filesystem"
@@ -102,6 +127,7 @@ describe ZFS::Filesystem do
     end
   end
 
+  # FIXME: move to ZFS::Snapshot tests
   it "should support clones" do
     snapshot = subject.snapshot!('test')
     clone = snapshot.clone!('tank/clonefs')
@@ -147,4 +173,7 @@ describe ZFS::Snapshot do
 
     fs.destroy!
   end
+
+  it "should have a 'parent' property"
+  it "should have a 'send_to' method"
 end
