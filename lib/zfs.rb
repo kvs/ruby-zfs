@@ -106,7 +106,7 @@ class ZFS
 			IO.popen(cmd) do |pipe|
 				pipe.lines.each do |attrs|
 					if attrs.match(/dataset does not exist$/) and !path.nil?
-						invalidate(path)
+						@properties.delete_if { |name, props| name.match(/^#{path}(\/|$|@)/) }
 					else
 						name, property, value = attrs.split(/\t/, 3)
 						@properties[name] ||= {}
@@ -124,6 +124,7 @@ class ZFS
 				@properties = {}
 			else
 				@properties.delete_if { |name, props| name.match(/^#{path}(\/|$|@)/) }
+				ZFS.properties(path)
 			end
 		end
 
