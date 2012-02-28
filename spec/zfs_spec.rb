@@ -130,6 +130,8 @@ describe ZFS::Filesystem do
     end
   end
 
+  it "should support recursive snapshots"
+
   # FIXME: move to ZFS::Snapshot tests
   it "should support clones" do
     snapshot = subject.snapshot!('test')
