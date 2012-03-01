@@ -383,6 +383,8 @@ class ZFS::Snapshot < ZFS
 			# FIXME: must verify that incr_snap is the latest snapshot at +dest+
 		end
 
+		dest = dest.name unless dest.is_a? String
+
 		send_opts.concat ['-i', incr_snap] if opts[:incremental]
 		send_opts.concat ['-I', incr_snap] if opts[:intermediary]
 		send_opts << '-R' if opts[:replication]
@@ -392,8 +394,6 @@ class ZFS::Snapshot < ZFS
 		receive_opts << '-F' if opts[:force]
 		receive_opts << '-d' if opts[:remote_name]
 		receive_opts << dest
-
-		dest = dest.name unless dest.is_a? String
 
 		system([*CMD_PREFIX, "send", *send_opts, "|", *CMD_PREFIX, "receive", *receive_opts].join(' '))
 
