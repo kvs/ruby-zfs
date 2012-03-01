@@ -84,8 +84,6 @@ describe ZFS do
     it "should convert 'mountpoint' to Pathname" do
       ZFS['tank'].mountpoint.should eq Pathname("/tank")
     end
-
-    it "should convert 'origin' to a ZFS::Filesystem on clones"
   end
 end
 
@@ -130,7 +128,19 @@ describe ZFS::Filesystem do
     end
   end
 
-  it "should support recursive snapshots"
+  it "should support recursive snapshots" do
+    fs2 = subject.create('fs2')
+    fs3 = fs2.create('fs3')
+    subject.snapshot!('test', recursive: true)
+    ZFS['tank/fs1@test'].should_not be_nil
+    ZFS['tank/fs1/fs2@test'].should_not be_nil
+    ZFS['tank/fs1/fs2/fs3@test'].should_not be_nil
+    ZFS['tank/fs1/fs2/fs3@test'].destroy!
+    ZFS['tank/fs1/fs2/fs3'].destroy!
+    ZFS['tank/fs1/fs2@test'].destroy!
+    ZFS['tank/fs1/fs2'].destroy!
+    ZFS['tank/fs1@test'].destroy!
+  end
 
   # FIXME: move to ZFS::Snapshot tests
   it "should support clones" do
@@ -138,7 +148,8 @@ describe ZFS::Filesystem do
     clone = snapshot.clone!('tank/clonefs')
     clone.should be_an_instance_of ZFS::Filesystem
     clone.should eq ZFS['/tank/clonefs']
-    clone['origin'].should eq snapshot.name
+
+    clone.origin.should eq snapshot
 
     clone.destroy!
     ZFS['/tank/clonefs'].should be_nil
