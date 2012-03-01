@@ -378,7 +378,7 @@ class ZFS::Snapshot < ZFS
 
 		incr_snap = opts[:incremental] || opts[:intermediary]
 		if incr_snap
-			# FIXME (missing 'origin') raise Exception, "snapshot '#{incr_snap} must exist at #{name}" unless origin.snapshots.grep(incr_snap)
+			# FIXME (missing 'origin') raise Exception, "snapshot '#{incr_snap}' must exist at #{name}" unless origin.snapshots.grep(incr_snap)
 			raise Exception, "snapshot '#{incr_snap} must exist at #{dest}" unless dest.snapshots.grep(incr_snap)
 			# FIXME: must verify that incr_snap is the latest snapshot at +dest+
 		end
