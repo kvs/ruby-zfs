@@ -377,34 +377,40 @@ class ZFS::Snapshot < ZFS
 		end
 	end
 
+	# Send snapshot to another filesystem
 	def send_to(dest, opts={})
 		incr_snap = nil
+		dest = ZFS(dest)
 
-		# FIXME: use another exception
 		if opts[:incremental] and opts[:intermediary]
-			raise Exception, "can't specify both :incremental and :intermediary"
+			raise ArgumentError, "can't specify both :incremental and :intermediary"
 		end
 
-		# FIXME: use another exception
 		incr_snap = opts[:incremental] || opts[:intermediary]
 		if incr_snap
-			# FIXME (missing 'origin') raise Exception, "snapshot '#{incr_snap}' must exist at #{name}" unless origin.snapshots.grep(incr_snap)
-			raise Exception, "snapshot '#{incr_snap} must exist at #{dest}" unless dest.snapshots.grep(incr_snap)
-			# FIXME: must verify that incr_snap is the latest snapshot at +dest+
+			incr_snap = ZFS(incr_snap)
+			snapname = incr_snap.name.sub(/^.+@/, '@')
+
+			raise NotFound, "destination must already exist when receiving incremental stream" unless dest.exist?
+			raise NotFound, "snapshot #{snapname} must exist at #{self}" if self.parent.snapshots.grep(ZFS(incr_snap)).empty?
+			raise NotFound, "snapshot #{snapname} must exist at #{dest}" if dest.snapshots.grep(dest + snapname).empty?
+		elsif opts[:use_sent_name]
+			raise NotFound, "destination must already exist when using sent name" unless dest.exist?
+		elsif dest.exist?
+			raise AlreadyExists, "destination must not exist when receiving full stream"
 		end
 
-		dest = dest.name unless dest.is_a? String
+		dest = dest.name if dest.is_a? ZFS
+		incr_snap = incr_snap.name if incr_snap.is_a? ZFS
 
 		send_opts = ZFS.zfs_path.flatten + ['send']
 		send_opts.concat ['-i', incr_snap] if opts[:incremental]
 		send_opts.concat ['-I', incr_snap] if opts[:intermediary]
 		send_opts << '-R' if opts[:replication]
-		send_opts << '-D' if opts[:dedup]
 		send_opts << name
 
 		receive_opts = ZFS.zfs_path.flatten + ['receive']
-		receive_opts << '-F' if opts[:force]
-		receive_opts << '-d' if opts[:remote_name]
+		receive_opts << '-d' if opts[:use_sent_name]
 		receive_opts << dest
 
 		Open4::popen4(*receive_opts) do |rpid, rstdin, rstdout, rstderr|

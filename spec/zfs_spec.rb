@@ -388,7 +388,81 @@ describe ZFS::Snapshot do
 	end
 
 	describe "#send_to" do
-		it "sends the snapshot to another filesystem"
+		before(:all) do
+			@source = ZFS('tank/foo').create
+			@dest1  = ZFS('tank/bar').create
+			@dest2  = ZFS('tank/baz')
+			@sourcesnap = @source.snapshot('snapshot')
+		end
+
+		after(:all) do
+			@source.destroy!(children: true)
+			@dest1.destroy!(children: true)
+			@dest2.destroy!(children: true) if @dest2.exist?
+		end
+
+		it "sends the snapshot to another filesystem" do
+			@sourcesnap.send_to(@dest2)
+			(@dest2 + '@snapshot').should exist
+			@dest2.snapshots.should eq [(@dest2 + '@snapshot')]
+
+			@dest2.destroy!(children: true)
+		end
+
+		it "raises an error if the destination filesystem exists when sending a full stream" do
+			expect { @sourcesnap.send_to(@dest1) }.to raise_error ZFS::AlreadyExists
+		end
+
+		it "supports incremental/intermediary snapshots" do
+			@sourcesnap.send_to(@dest2)
+
+			snap2 = @source.snapshot('snapshot2')
+			snap2.send_to(@dest2, incremental: @sourcesnap)
+			snap2.should exist
+			(@dest2 + '@snapshot2').should exist
+
+			snap3 = @source.snapshot('snapshot3')
+			snap3.send_to(@dest2, intermediary: @sourcesnap)
+			snap3.should exist
+			(@dest2 + '@snapshot3').should exist
+
+			snap3.destroy!
+			snap2.destroy!
+			@dest2.destroy!(children: true)
+		end
+
+		it "raises an error when specifying invalid combinations of options" do
+			expect { @sourcesnap.send_to(@dest1, incremental: @sourcesnap, intermediary: @sourcesnap) }.to raise_error ArgumentError
+		end
+
+		it "raises an error when filesystems/snapshots don't exist" do
+			expect { @sourcesnap.send_to(@dest1, incremental: ZFS('tank/none')) }.to raise_error ZFS::NotFound
+			expect { @sourcesnap.send_to(@dest1, intermediary: ZFS('tank/none')) }.to raise_error ZFS::NotFound
+			expect { @sourcesnap.send_to(@dest2, intermediary: @sourcesnap) }.to raise_error ZFS::NotFound
+		end
+
+		it "supports replication streams" do
+			source2 = (@source + 'sub').create
+			source2.snapshot('snapshot')
+
+			@sourcesnap.send_to(@dest2, replication: true)
+
+			@dest2.should exist
+			(@dest2 + 'sub@snapshot').should exist
+
+			@dest2.destroy!(children: true)
+		end
+
+		it "supports 'receive -d'" do
+			@sourcesnap.send_to(@dest1, use_sent_name: true)
+			(@dest1 + 'foo').should exist
+			(@dest1 + 'foo@snapshot').should exist
+			(@dest1 + 'foo').destroy!(children: true)
+		end
+
+		it "raises an error when using 'receive -d' and destination is missing" do
+			expect { @sourcesnap.send_to(@dest2, use_sent_name: true) }.to raise_error ZFS::NotFound
+		end
 	end
 end
 
