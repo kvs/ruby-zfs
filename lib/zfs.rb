@@ -6,6 +6,8 @@ require 'open4'
 
 # Get ZFS object.
 def ZFS(path)
+	return path if path.is_a? ZFS
+
 	path = Pathname(path).cleanpath.to_s
 
 	if path.match(/^\//)

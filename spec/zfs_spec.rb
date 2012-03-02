@@ -19,6 +19,11 @@ describe "ZFS()" do
 	it "supports Pathname's" do
 		ZFS('tank').should eq ZFS(Pathname('tank'))
 	end
+
+	it "passes a ZFS as argument through untouched" do
+		fs = ZFS('tank')
+		ZFS(fs).should eq fs
+	end
 end
 
 
