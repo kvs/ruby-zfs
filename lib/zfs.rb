@@ -1,34 +1,196 @@
+# -*- mode: ruby; tab-width: 4; indent-tabs-mode: t -*-
+
 require 'pathname'
 require 'date'
+require 'open4'
 
-CMD_PREFIX=%w(ssh vagrant-zfs sudo zfs)
+# Get ZFS object.
+def ZFS(path)
+	path = Pathname(path).cleanpath.to_s
 
+	if path.match(/^\//)
+		ZFS.mounts[path]
+	elsif path.match('@')
+		ZFS::Snapshot.new(path)
+	else
+		ZFS::Filesystem.new(path)
+	end
+end
+
+# Pathname-inspired class to handle ZFS filesystems/snapshots/volumes
 class ZFS
+	@zfs_path   = "zfs"
+	@zpool_path = "zpool"
+
+	attr_reader :name
+	attr_reader :pool
+	attr_reader :path
+
+	class NotFound < Exception; end
+	class AlreadyExists < Exception; end
+	class InvalidName < Exception; end
+
+	# Create a new ZFS object (_not_ filesystem).
+	def initialize(name)
+		@name, @pool, @path = name, *name.split('/', 2)
+	end
+
+	# Return the parent of the current filesystem, or nil if there is none.
+	def parent
+		p = Pathname(name).parent.to_s
+		if p == '.'
+			nil
+		else
+			ZFS(p)
+		end
+	end
+
+	# Returns the children of this filesystem
+	def children(opts={})
+		raise NotFound if !exist?
+
+		stdout, stderr = [], []
+		cmd = [ZFS.zfs_path].flatten + %w(list -H -r -oname -tfilesystem)
+		cmd << '-d1' unless opts[:recursive]
+		cmd << name
+
+		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+
+		stdout.shift # self
+		stdout.collect do |filesystem|
+			ZFS(filesystem.chomp)
+		end
+	end
+
+	# Does the filesystem exist?
+	def exist?
+		stdout, stderr = [], []
+		cmd = [ZFS.zfs_path].flatten + %w(list -H -oname) + [name]
+
+		Open4::spawn(cmd, stdout: stdout, stderr: stderr, ignore_exit_failure: true)
+
+		if stdout == ["#{name}\n"]
+			true
+		else
+			false
+		end
+	end
+
+	# Create filesystem
+	def create(opts={})
+		return nil if exist?
+
+		stdout, stderr = [], []
+		cmd = [ZFS.zfs_path].flatten + ['create']
+		cmd << '-p' if opts[:parents]
+		cmd += ['-V', opts[:volume]] if opts[:volume]
+		cmd << name
+
+		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+
+		if stdout.empty? and stderr.empty?
+			return self
+		else
+			raise Exception, "something went wrong"
+		end
+	end
+
+	# Destroy filesystem
+	def destroy!(opts={})
+		raise NotFound if !exist?
+
+		stdout, stderr = [], []
+		cmd = [ZFS.zfs_path].flatten + ['destroy']
+		cmd << '-r' if opts[:children]
+		cmd << name
+
+		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+
+		if stdout.empty? and stderr.empty?
+			return true
+		else
+			raise Exception, "something went wrong"
+		end
+	end
+
+	# Stringify
+	def to_s
+		"#<ZFS:#{name}>"
+	end
+
+	# ZFS's are considered equal if they are the same class and name
+	def ==(other)
+		other.class == self.class && other.name == self.name
+	end
+
+	def [](key)
+		stdout, stderr = [], []
+		cmd = [ZFS.zfs_path].flatten + %w(get -ovalue -Hp) + [key.to_s, name]
+
+		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+
+		if stderr.empty? and stdout.size == 1
+			return stdout.first.chomp
+		else
+			raise Exception, "something went wrong"
+		end
+	end
+
+	def []=(key, value)
+		stdout, stderr = [], []
+		cmd = [ZFS.zfs_path].flatten + ['set', "#{key.to_s}=#{value}", name]
+
+		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+
+		if stderr.empty? and stdout.empty?
+			return value
+		else
+			raise Exception, "something went wrong"
+		end
+	end
+
 	class << self
+		attr_accessor :zfs_path
+		attr_accessor :zpool_path
+
+		# Get an Array of all pools
+		def pools
+			stdout, stderr = [], []
+			cmd = [ZFS.zpool_path].flatten + %w(list -Honame)
+
+			Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+
+			stdout.collect do |pool|
+				ZFS(pool.chomp)
+			end
+		end
+
+		# Get a Hash of all mountpoints and their filesystems
+		def mounts
+			stdout, stderr = [], []
+			cmd = [ZFS.zfs_path].flatten + %w(get -rHp -oname,value mountpoint)
+
+			Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+
+			mounts = stdout.collect do |line|
+				fs, path = line.chomp.split(/\t/, 2)
+				[path, ZFS(fs)]
+			end
+			Hash[mounts]
+		end
+
 		# Define an attribute
-		def attribute(name, opts={})
-			define_method "#{name}_source" do
-				# FIXME
-			end if opts[:edit]
-
-			define_method "#{name}_inherited?" do
-				# FIXME
-			end if opts[:inherit]
-
-			define_method "#{name}_inherit!" do
-				# FIXME
-			end if opts[:inherit]
+		def property(name, opts={})
 
 			case opts[:type]
 			when :size, :integer
-				# FIXME: when type==:size, also accept Strings with standard units, which can get passed down through to ZFS
 				# FIXME: also takes :values. if :values is all-Integers, these are the only options. if there are non-ints, then :values is a supplement
 
 				define_method name do
-					get(name)
+					Integer(self[name])
 				end
 				define_method "#{name}=" do |value|
-					set(name, value)
+					self[name] = value.to_s
 				end if opts[:edit]
 
 			when :boolean
@@ -36,15 +198,15 @@ class ZFS
 				# FIXME: if options[:values] is defined, also create a 'name' method, since 'name?' might not ring true
 				# FIXME: replace '_' by '-' in opts[:values]
 				define_method "#{name}?" do
-					get(name) == 'on'
+					self[name] == 'on'
 				end
 				define_method "#{name}=" do |value|
-					set(name, value ? 'on' : 'off')
+					self[name] = value ? 'on' : 'off'
 				end if opts[:edit]
 
 			when :enum
 				define_method name do
-					sym = (get(name) || "").gsub('-', '_').to_sym
+					sym = (self[name] || "").gsub('-', '_').to_sym
 					if opts[:values].grep(sym)
 						return sym
 					else
@@ -52,330 +214,176 @@ class ZFS
 					end
 				end
 				define_method "#{name}=" do |value|
-					set(name, value.to_s.gsub('_', '-'))
+					self[name] = value.to_s.gsub('_', '-')
 				end if opts[:edit]
 
 			when :snapshot
 				define_method name do
-					val = get(name)
-					val.nil? ? nil : ZFS[val]
+					val = self[name]
+					if val.nil? or val == '-'
+						nil
+					else
+						ZFS(val)
+					end
 				end
 
 			when :float
 				define_method name do
-					Float(get(name))
+					Float(self[name])
 				end
 				define_method "#{name}=" do |value|
-					set(name, value)
+					self[name] = value
 				end if opts[:edit]
 
 			when :string
 				define_method name do
-					get(name)
+					self[name]
 				end
 				define_method "#{name}=" do |value|
-					set(name, value)
+					self[name] = value
 				end if opts[:edit]
 
 			when :date
 				define_method name do
-					DateTime.strptime(get(name), '%s')
+					DateTime.strptime(self[name], '%s')
 				end
 
 			when :pathname
 				define_method name do
-					Pathname(get(name))
+					Pathname(self[name])
 				end
 				define_method "#{name}=" do |value|
-					set(name, value.to_s)
+					self[name] = value.to_s
 				end if opts[:edit]
 
 			else
 				puts "Unknown type '#{opts[:type]}'"
 			end
 		end
-		private :attribute
-
-		# Load/reload properties for all or a specific filesystem
-		def properties(path=nil)
-			@properties ||= {}
-
-			cmd = [*CMD_PREFIX, "get", "-oname,property,value", "-Hpr", "all"]
-			cmd << path unless path.nil?
-			cmd << { err: [:child, :out] }
-
-			IO.popen(cmd) do |pipe|
-				pipe.lines.each do |attrs|
-					if attrs.match(/dataset does not exist$/) and !path.nil?
-						@properties.delete_if { |name, props| name.match(/^#{path}(\/|$|@)/) }
-					else
-						name, property, value = attrs.split(/\t/, 3)
-						@properties[name] ||= {}
-						@properties[name][property] = value.chomp
-					end
-				end
-			end unless @properties.has_key?(path)
-
-			path.nil? ? @properties : @properties[path]
-		end
-
-		# Invalidate properties for a given pool-path
-		def invalidate(path=nil)
-			if path.nil? or @properties.nil?
-				@properties = {}
-			else
-				@properties.delete_if { |name, props| name.match(/^#{path}(\/|$|@)/) }
-				ZFS.properties(path)
-			end
-		end
-
-		# Fetch filesystem by pool-path or mountpoint.
-		def [](path, find_parent=false)
-			if path[0] == '/'
-				# Find by mountpoint - remember to exclude zoned/jailed filesystems
-				path = Pathname(path).cleanpath
-				fs = mountpoints.find { |m| m[0] == path.to_s }
-
-				if fs.nil? and find_parent
-					until path.root? or !fs.nil?
-						fs = mountpoints.find { |m| m[0] == path.to_s }
-						path = path.parent
-					end
-				end
-
-				fs.nil? ? nil : fs[1]
-			else
-				props = self.properties(path)
-
-				return nil if props.nil?
-
-				case props['type']
-				when 'filesystem';
-					ZFS::Filesystem.new(path)
-				when 'snapshot';
-					ZFS::Snapshot.new(path)
-				when 'volume';
-					ZFS::Volume.new(path)
-				else
-					raise Exception, "Unknown filesystem type '#{props['type']}'"
-				end
-			end
-		end
-
-		# Enumerator for all filesystems in all pools.
-		# FIXME: also iterates through snapshots and volumes, which we might not want.
-		def filesystems
-			if !block_given?
-				enum_for(:filesystems)
-			else
-				properties.keys.each { |fs| yield self[fs] }
-			end
-		end
-
-		# Enumerator for all mounted filesystems, excluding those in a jail or zone.
-		def mountpoints
-			if !block_given?
-				enum_for(:mountpoints)
-			else
-				properties.find_all do |fs, props|
-					props['jailed'] != 'on' && props['zoned'] != 'on'
-				end.each { |fs, props| yield [ props['mountpoint'], self[fs] ] }
-			end
-		end
-
-		# Create filesystem
-		# FIXME: `opts[:parents] = true` to create sub-filesystems (zfs create -p)
-		# FIXME: `opts[:volume] = INT` to create a volume with ref-reservation of INT size
-		def create(name, opts={})
-			if matches = name.match(/^(.+)\/([^\/]+)$/)
-				self[matches[1]].create(matches[2])
-			else
-				raise Exception, "Invalid path-spec, '#{name}'"
-			end
-		end
+		private :property
 	end
 
-	attr_reader :name
-	attr_reader :pool
-	attr_reader :path
+	property :available,            type: :size
+	property :compressratio,        type: :float
+	property :creation,             type: :date
+	property :defer_destroy,        type: :boolean
+	property :mounted,              type: :boolean
+	property :origin,               type: :snapshot
+	property :refcompressratio,     type: :float
+	property :referenced,           type: :size
+	property :type,                 type: :enum, values: [:filesystem, :snapshot, :volume]
+	property :used,                 type: :size
+	property :usedbychildren,       type: :size
+	property :usedbydataset,        type: :size
+	property :usedbyrefreservation, type: :size
+	property :usedbysnapshots,      type: :size
+	property :userrefs,             type: :integer
 
-	attribute :available,            type: :size
-	attribute :compressratio,        type: :float
-	attribute :creation,             type: :date
-	attribute :defer_destroy,        type: :boolean
-	attribute :mounted,              type: :boolean
-	attribute :origin,               type: :snapshot
-	attribute :refcompressratio,     type: :float
-	attribute :referenced,           type: :size
-	attribute :type,                 type: :enum, values: [:filesystem, :snapshot, :volume] # FIXME: move to subclasses as a statically-defined prop?
-	attribute :used,                 type: :size
-	attribute :usedbychildren,       type: :size
-	attribute :usedbydataset,        type: :size
-	attribute :usedbyrefreservation, type: :size
-	attribute :usedbysnapshots,      type: :size
-	attribute :userrefs,             type: :integer
+	property :aclinherit,           type: :enum,    edit: true, inherit: true, values: [:discard, :noallow, :restricted, :passthrough, :passthrough_x]
+	property :atime,                type: :boolean, edit: true, inherit: true
+	property :canmount,             type: :boolean, edit: true,                values: [:noauto]
+	property :checksum,             type: :boolean, edit: true, inherit: true, values: [:fletcher2, :fletcher4, :sha256]
+	property :compression,          type: :boolean, edit: true, inherit: true, values: [:lzjb, :gzip, :gzip_1, :gzip_2, :gzip_3, :gzip_4, :gzip_5, :gzip_6, :gzip_7, :gzip_8, :gzip_9, :zle]
+	property :copies,               type: :integer, edit: true, inherit: true, values: [1, 2, 3]
+	property :dedup,                type: :boolean, edit: true, inherit: true, values: [:verify, :sha256, 'sha256,verify']
+	property :devices,              type: :boolean, edit: true, inherit: true
+	property :exec,                 type: :boolean, edit: true, inherit: true
+	property :logbias,              type: :enum,    edit: true, inherit: true, values: [:latency, :throughput]
+	property :mlslabel,             type: :string,  edit: true, inherit: true
+	property :mountpoint,           type: :pathname,edit: true, inherit: true
+	property :nbmand,               type: :boolean, edit: true, inherit: true
+	property :primarycache,         type: :enum,    edit: true, inherit: true, values: [:all, :none, :metadata]
+	property :quota,                type: :size,    edit: true,                values: [:none]
+	property :readonly,             type: :boolean, edit: true, inherit: true
+	property :recordsize,           type: :integer, edit: true, inherit: true, values: [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
+	property :refquota,             type: :size,    edit: true,                values: [:none]
+	property :refreservation,       type: :size,    edit: true,                values: [:none]
+	property :reservation,          type: :size,    edit: true,                values: [:none]
+	property :secondarycache,       type: :enum,    edit: true, inherit: true, values: [:all, :none, :metadata]
+	property :setuid,               type: :boolean, edit: true, inherit: true
+	property :sharenfs,             type: :boolean, edit: true, inherit: true # FIXME: also takes 'share(1M) options'
+	property :sharesmb,             type: :boolean, edit: true, inherit: true # FIXME: also takes 'sharemgr(1M) options'
+	property :snapdir,              type: :enum,    edit: true, inherit: true, values: [:hidden, :visible]
+	property :sync,                 type: :enum,    edit: true, inherit: true, values: [:standard, :always, :disabled]
+	property :version,              type: :integer, edit: true,                values: [1, 2, 3, 4, :current]
+	property :vscan,                type: :boolean, edit: true, inherit: true
+	property :xattr,                type: :boolean, edit: true, inherit: true
+	property :zoned,                type: :boolean, edit: true, inherit: true
+	property :jailed,               type: :boolean, edit: true, inherit: true
+	property :volsize,              type: :size,    edit: true
 
-	attribute :aclinherit,           type: :enum,    edit: true, inherit: true, values: [:discard, :noallow, :restricted, :passthrough, :passthrough_x]
-	attribute :atime,                type: :boolean, edit: true, inherit: true
-	attribute :canmount,             type: :boolean, edit: true,                values: [:noauto]
-	attribute :checksum,             type: :boolean, edit: true, inherit: true, values: [:fletcher2, :fletcher4, :sha256]
-	attribute :compression,          type: :boolean, edit: true, inherit: true, values: [:lzjb, :gzip, :gzip_1, :gzip_2, :gzip_3, :gzip_4, :gzip_5, :gzip_6, :gzip_7, :gzip_8, :gzip_9, :zle]
-	attribute :copies,               type: :integer, edit: true, inherit: true, values: [1, 2, 3]
-	attribute :dedup,                type: :boolean, edit: true, inherit: true, values: [:verify, :sha256, 'sha256,verify']
-	attribute :devices,              type: :boolean, edit: true, inherit: true
-	attribute :exec,                 type: :boolean, edit: true, inherit: true
-	attribute :logbias,              type: :enum,    edit: true, inherit: true, values: [:latency, :throughput]
-	attribute :mlslabel,             type: :string,  edit: true, inherit: true
-	attribute :mountpoint,           type: :pathname,edit: true, inherit: true
-	attribute :nbmand,               type: :boolean, edit: true, inherit: true
-	attribute :primarycache,         type: :enum,    edit: true, inherit: true, values: [:all, :none, :metadata]
-	attribute :quota,                type: :size,    edit: true,                values: [:none]
-	attribute :readonly,             type: :boolean, edit: true, inherit: true
-	attribute :recordsize,           type: :integer, edit: true, inherit: true, values: [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
-	attribute :refquota,             type: :size,    edit: true,                values: [:none]
-	attribute :refreservation,       type: :size,    edit: true,                values: [:none]
-	attribute :reservation,          type: :size,    edit: true,                values: [:none]
-	attribute :secondarycache,       type: :enum,    edit: true, inherit: true, values: [:all, :none, :metadata]
-	attribute :setuid,               type: :boolean, edit: true, inherit: true
-	attribute :sharenfs,             type: :boolean, edit: true, inherit: true # FIXME: also takes 'share(1M) options'
-	attribute :sharesmb,             type: :boolean, edit: true, inherit: true # FIXME: also takes 'sharemgr(1M) options'
-	attribute :snapdir,              type: :enum,    edit: true, inherit: true, values: [:hidden, :visible]
-	attribute :sync,                 type: :enum,    edit: true, inherit: true, values: [:standard, :always, :disabled]
-	attribute :version,              type: :integer, edit: true,                values: [1, 2, 3, 4, :current]
-	attribute :vscan,                type: :boolean, edit: true, inherit: true
-	attribute :xattr,                type: :boolean, edit: true, inherit: true
-	attribute :zoned,                type: :boolean, edit: true, inherit: true
-	attribute :jailed,               type: :boolean, edit: true, inherit: true
-
-	attribute :casesensitivity,      type: :enum,    create_only: true, values: [:sensitive, :insensitive, :mixed]
-	attribute :normalization,        type: :enum,    create_only: true, values: [:none, :formC, :formD, :formKC, :formKD]
-	attribute :utf8only,             type: :boolean, create_only: true
-
-	# Set a variable
-	def set(key, value)
-		# FIXME: remember to invalidate or refresh ZFS.properties
-	end
-
-	# Get a variable
-	def get(key)
-		ZFS.properties(name)[key.to_s]
-	end
-
-	def initialize(name)
-		@name, @pool, @path = name, *name.split('/', 2)
-	end
-
-	def to_s
-		"#<ZFS:#{name}>"
-	end
-
-	def valid?
-		!ZFS.properties(name).nil?
-	end
-
-	def [](key)
-		ZFS.properties(name)[key]
-	end
-
-	def []=(key, value)
-		puts "Unimplemented."
-	end
-
-	def rename!(newname)
-		raise Exception, "target already exists" if ZFS[newname]
-		system(*CMD_PREFIX, "rename", name, newname)
-		ZFS.invalidate(name)
-		initialize(newname)
-	end
-
-	# FIXME: better exception
-	# FIXME: fails if there are snapshots or children - -r/-R?
-	def destroy!
-		raise Exception, "filesystem has already been deleted" if !valid?
-		system(*CMD_PREFIX, "destroy", name)
-		ZFS.invalidate(name)
-	end
-
-	def ==(other)
-		other.class == self.class && other.name == self.name
-	end
-
-	# set/get/inherit - []?
-	# mount!/unmount!
-	# share/unshare
-	# receive - might only be possible with '-d', unless defined as a class-method on ZFS
+	property :casesensitivity,      type: :enum,    create_only: true, values: [:sensitive, :insensitive, :mixed]
+	property :normalization,        type: :enum,    create_only: true, values: [:none, :formC, :formD, :formKC, :formKD]
+	property :utf8only,             type: :boolean, create_only: true
+	property :volblocksize,         type: :integer, create_only: true, values: [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
 end
 
-
-
-module ZFS::Snapshots
-	def snapshot!(snapname, opts={})
-		raise Exception, "filesystem has been deleted" if !valid?
-		raise Exception, "snapshot already exists" unless snapshots.grep(snapname).empty?
-
-		if opts[:recursive]
-			system(*CMD_PREFIX, "snapshot", "-r", "#{name}@#{snapname}")
-		else
-			system(*CMD_PREFIX, "snapshot", "#{name}@#{snapname}")
-		end
-		ZFS.invalidate(name)
-		ZFS["#{name}@#{snapname}"]
-	end
-
-	def snapshots
-		raise Exception, "filesystem has been deleted" if !valid?
-
-		snaps = ZFS.properties.find_all { |fs, props| fs.match(/^#{name}@/) }
-		snaps.collect { |fs, props| ZFS::Snapshot.new(fs) }
-	end
-
-	# FIXME: check that self is indeed a clone-fs
-	# FIXME: origin-fs loses a snapshot, and gets its own origin altered, so reload properties+snapshots for it, too.
-	def promote!
-		raise Exception, "filesystem is not a clone" if self.origin.nil?
-		old_origin = self.origin.name
-
-		system(*CMD_PREFIX, "promote", name)
-
-		ZFS.invalidate(name)
-		ZFS.invalidate(old_origin)
-	end
-end
 
 class ZFS::Snapshot < ZFS
-	# FIXME: check for errors in +clone+ (pool must be identical to snapshot, for instance, and fs must not already exist)
-	# FIXME: better Exception
-	def clone!(clone)
-		raise Exception, "snapshot has been deleted" if !valid?
+	# Return sub-filesystem
+	def +(path)
+		raise InvalidName if path.match(/@/)
 
-		system(*CMD_PREFIX, "clone", name, clone)
-		ZFS.invalidate(name)
-		ZFS.invalidate(clone)
-		ZFS[clone]
+		parent + path + name.sub(/^.+@/, '@')
 	end
 
-	def rename!(newname)
-		raise Exception, "invalid new name" if newname.match('/')
-		super(name.gsub(/@.+$/, "@#{newname}"))
+	# Just remove the snapshot-name
+	def parent
+		ZFS(name.sub(/@.+/, ''))
 	end
 
-	# FIXME: walk through all filesystems (ZFS.properties), and find the ones where the 'origin' property
-	#        matches +name+.
-	# def clones
-	# end
+	# Rename snapshot
+	def rename!(newname, opts={})
+		raise AlreadyExists if (parent + "@#{newname}").exist?
 
-	# send
+		newname = (parent + "@#{newname}").name
+
+		stdout, stderr = [], []
+		cmd = [ZFS.zfs_path].flatten + ['rename']
+		cmd << '-r' if opts[:children]
+		cmd << name
+		cmd << newname
+
+		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+
+		if stdout.empty? and stderr.empty?
+			initialize(newname)
+			return self
+		else
+			raise Exception, "something went wrong"
+		end
+	end
+
+	# Clone snapshot
+	def clone!(clone, opts={})
+		clone = clone.name if clone.is_a? ZFS
+
+		raise AlreadyExists if ZFS(clone).exist?
+
+		stdout, stderr = [], []
+		cmd = [ZFS.zfs_path].flatten + ['clone']
+		cmd << '-p' if opts[:parents]
+		cmd << name
+		cmd << clone
+
+		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+
+		if stdout.empty? and stderr.empty?
+			return ZFS(clone)
+		else
+			raise Exception, "something went wrong"
+		end
+	end
 
 	def send_to(dest, opts={})
-		send_opts = []
-		receive_opts = []
-
 		incr_snap = nil
 
+		# FIXME: use another exception
 		if opts[:incremental] and opts[:intermediary]
 			raise Exception, "can't specify both :incremental and :intermediary"
 		end
 
+		# FIXME: use another exception
 		incr_snap = opts[:incremental] || opts[:intermediary]
 		if incr_snap
 			# FIXME (missing 'origin') raise Exception, "snapshot '#{incr_snap}' must exist at #{name}" unless origin.snapshots.grep(incr_snap)
@@ -385,48 +393,107 @@ class ZFS::Snapshot < ZFS
 
 		dest = dest.name unless dest.is_a? String
 
+		send_opts = ZFS.zfs_path.flatten + ['send']
 		send_opts.concat ['-i', incr_snap] if opts[:incremental]
 		send_opts.concat ['-I', incr_snap] if opts[:intermediary]
 		send_opts << '-R' if opts[:replication]
 		send_opts << '-D' if opts[:dedup]
 		send_opts << name
 
+		receive_opts = ZFS.zfs_path.flatten + ['receive']
 		receive_opts << '-F' if opts[:force]
 		receive_opts << '-d' if opts[:remote_name]
 		receive_opts << dest
 
-		system([*CMD_PREFIX, "send", *send_opts, "|", *CMD_PREFIX, "receive", *receive_opts].join(' '))
-
-		ZFS.invalidate(dest)
+		Open4::popen4(*receive_opts) do |rpid, rstdin, rstdout, rstderr|
+			Open4::popen4(*send_opts) do |spid, sstdin, sstdout, sstderr|
+				while !sstdout.eof?
+					rstdin.write(sstdout.read(16384))
+				end
+				raise "stink" unless sstderr.read == ''
+			end
+		end
 	end
 end
 
-class ZFS::Volume < ZFS
-	include ZFS::Snapshots
-
-	attribute :volblocksize,         type: :integer, create_only: true, values: [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
-	attribute :volsize,              type: :size,    edit: true
-
-	# FIXME: how do we create?
-end
 
 class ZFS::Filesystem < ZFS
-	include ZFS::Snapshots
-
-	# Create filesystem
-	def create(subname)
-		fs = "#{name}/#{subname}"
-
-		raise Exception, "filesystem already exists" if ZFS[fs]
-
-		system(*CMD_PREFIX, "create", fs)
-		ZFS.invalidate(name)
-		ZFS[fs]
+	# Return sub-filesystem.
+	def +(path)
+		if path.match(/^@/)
+			ZFS("#{name.to_s}#{path}")
+		else
+			path = Pathname(name) + path
+			ZFS(path.cleanpath.to_s)
+		end
 	end
 
-	def rename!(newname)
-		raise Exception, "invalid new name" if newname.match('@')
-		raise Exception, "must be in same pool" unless newname.match(/^#{pool}\//)
-		super(newname)
+	# Rename filesystem.
+	def rename!(newname, opts={})
+		raise AlreadyExists if ZFS(newname).exist?
+
+		stdout, stderr = [], []
+		cmd = [ZFS.zfs_path].flatten + ['rename']
+		cmd << '-p' if opts[:parents]
+		cmd << name
+		cmd << newname
+
+		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+
+		if stdout.empty? and stderr.empty?
+			initialize(newname)
+			return self
+		else
+			raise Exception, "something went wrong"
+		end
+	end
+
+	# Create a snapshot.
+	def snapshot(snapname, opts={})
+		raise NotFound, "no such filesystem" if !exist?
+		raise AlreadyExists, "#{snapname} exists" if ZFS("#{name}@#{snapname}").exist?
+
+		stdout, stderr = [], []
+		cmd = [ZFS.zfs_path].flatten + ['snapshot']
+		cmd << '-r' if opts[:children]
+		cmd << "#{name}@#{snapname}"
+
+		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+
+		if stdout.empty? and stderr.empty?
+			return ZFS("#{name}@#{snapname}")
+		else
+			raise Exception, "something went wrong"
+		end
+	end
+
+	# Get an Array of all snapshots on this filesystem.
+	def snapshots
+		raise NotFound, "no such filesystem" if !exist?
+
+		stdout, stderr = [], []
+		cmd = [ZFS.zfs_path].flatten + %w(list -H -d1 -r -oname -tsnapshot) + [name]
+
+		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+
+		stdout.collect do |snap|
+			ZFS(snap.chomp)
+		end
+	end
+
+	# Promote this filesystem.
+	def promote!
+		raise NotFound, "filesystem is not a clone" if self.origin.nil?
+
+		stdout, stderr = [], []
+		cmd = [ZFS.zfs_path].flatten + ['promote', name]
+
+		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+
+		if stdout.empty? and stderr.empty?
+			return self
+		else
+			raise Exception, "something went wrong"
+		end
 	end
 end

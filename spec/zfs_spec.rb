@@ -1,195 +1,415 @@
-# -*- mode: ruby; tab-width: 2; indent-tabs-mode: nil -*-
-
+# -*- mode: ruby; tab-width: 4; indent-tabs-mode: t -*-
 require 'spec_helper'
 
-# Basic list
+# NOTE! The ordering of the tests may be important, or at least significant.
+# Example: we test create+snapshot, then destroy - in between, there is state left behind
+# since we don't want to assume something works before it's been tested, to avoid very
+# confusing errors in stuff other than what is being tested.
+#
+# We also test clones after snapshots, and promote! after clones and properties.
+
+
+# Helper-method to return ZFS-instances
+describe "ZFS()" do
+	it "returns the correct instance" do
+		ZFS('tank').should be_an_instance_of ZFS::Filesystem
+		ZFS('tank@foo').should be_an_instance_of ZFS::Snapshot
+	end
+
+	it "supports Pathname's" do
+		ZFS('tank').should eq ZFS(Pathname('tank'))
+	end
+end
+
+
+# Methods that don't require a live filesystem
 describe ZFS do
-  # Initially, the test-system has only 'tank', so this is what we're assuming here
+	describe "#parent" do
+		it "returns the correct parent" do
+			ZFS('tank/foo/bar').parent.should eq ZFS('tank/foo')
+			ZFS('tank/foo/bar@snap').parent.should eq ZFS('tank/foo/bar')
+			ZFS('tank/foo/bar@snap').parent.parent.should eq ZFS('tank/foo')
+		end
+	end
 
-  describe ".filesystems" do
-    subject { ZFS.filesystems }
-    it { should be_an_instance_of Enumerator }
-    it "should list all filesystems" do
-      subject.to_a.length.should eq 1
-      subject.first.name.should eq "tank"
-    end
-  end
-
-  describe ".mountpoints" do
-    subject { ZFS.mountpoints }
-    it { should be_an_instance_of Enumerator }
-    it "should list all mountpoints" do
-      subject.to_a.length.should eq 1
-      subject.first[0].should eq "/tank"
-      subject.first[1].should eq ZFS.filesystems.first
-    end
-  end
-
-  it "should be able to fetch filesystems by zpool-path" do
-    ZFS['tank'].should be_an_instance_of ZFS::Filesystem
-  end
-
-  it "should be able to fetch filesystems by mountpoint" do
-    ZFS['/tank'].should eq ZFS['tank']
-  end
+	describe "#+" do
+		it "returns an appended path" do
+			(ZFS('tank/foo') + 'bar').should eq ZFS('tank/foo/bar')
+			(ZFS('tank/foo') + '@bar').should eq ZFS('tank/foo@bar')
+			(ZFS('tank/foo@baz') + 'bar').should eq ZFS('tank/foo/bar@baz')
+			expect { (ZFS('tank/foo@baz') + '@bar') }.to raise_exception ZFS::InvalidName
+		end
+	end
 end
 
-# Basic create/destroy
+
+# Methods that require a live filesystem.
 describe ZFS do
-  it "should be able to create filesystems" do
-    ZFS.filesystems.to_a.length.should eq 1
-    fs = ZFS.create("tank/fs1")
-    ZFS.filesystems.to_a.length.should eq 2
-    fs.destroy!
-    ZFS.filesystems.to_a.length.should eq 1
-  end
+	include_context "vagrant"
+
+	describe "#create" do
+		it "creates a filesystem, and returns the filesystem or nil if it already exists" do
+			ZFS('tank/foo').should_not exist
+			ZFS('tank/foo').create.should eq ZFS('tank/foo')
+			ZFS('tank/foo').create.should be_nil
+			ZFS('tank/foo').should exist
+		end
+
+		it "creates parents" do
+			ZFS('tank/foo/bar/baz').create(parents: true).should exist
+		end
+
+		it "raises an error if parent does not exist"
+
+		it "creates volumes" do
+			ZFS('tank/foo/volume').create(volume: '10G').should_not be_nil
+		end
+	end
+
+	describe "#snapshot" do
+		it "creates a snapshot" do
+			snapshot = ZFS('tank/foo').snapshot('qux')
+
+			snapshot.should be_an_instance_of ZFS::Snapshot
+		end
+
+		it "creates a snapshot recursively" do
+			ZFS('tank/foo').snapshot('quux', children: true)
+			ZFS('tank/foo@quux').should exist
+			ZFS('tank/foo/bar@quux').should exist
+			ZFS('tank/foo/bar/baz@quux').should exist
+		end
+
+		it "should raise an exception if filesystem does not exist" do
+			expect { ZFS('tank/none').snapshot('foo') }.to raise_error(ZFS::NotFound)
+		end
+
+		it "should raise an exception if snapshot already exists" do
+			expect { ZFS('tank/foo').snapshot('quux') }.to raise_error(ZFS::AlreadyExists)
+		end
+	end
+
+	describe "#destroy" do
+		it "destroys snapshots" do
+			ZFS('tank/foo/bar/baz@quux').should exist
+			ZFS('tank/foo/bar/baz@quux').destroy!
+			ZFS('tank/foo/bar/baz@quux').should_not exist
+		end
+
+		it "destroys filesystems" do
+			ZFS('tank/foo/bar/baz').should exist
+			ZFS('tank/foo/bar/baz').destroy!
+			ZFS('tank/foo/bar/baz').should_not exist
+		end
+
+		it "destroys snapshots recursively" do
+			ZFS('tank/foo@quux').should exist
+			ZFS('tank/foo/bar@quux').should exist
+
+			ZFS('tank/foo@quux').destroy!(children: true)
+
+			ZFS('tank/foo@quux').should_not exist
+			ZFS('tank/foo/bar@quux').should_not exist
+
+			ZFS('tank/foo').should exist
+			ZFS('tank/foo/bar').should exist
+		end
+
+		it "destroys filesystems recursively" do
+			ZFS('tank/foo').destroy!(children: true)
+			ZFS('tank/foo').should_not exist
+		end
+
+		it "should raise an exception if filesystem does not exist" do
+			expect { ZFS('tank/none').destroy! }.to raise_error(ZFS::NotFound)
+		end
+	end
+
+	describe "#snapshots" do
+		it "returns a list of snapshots on a filesystem" do
+			snapshot = ZFS('tank/foo').create.snapshot('bar')
+			snapshot.should exist
+
+			ZFS('tank/foo').snapshots.should eq [snapshot]
+
+			snapshot2 = ZFS('tank/foo').snapshot('baz')
+
+			ZFS('tank/foo').snapshots.should eq [snapshot, snapshot2]
+
+			# Should only include direct descendants
+			ZFS('tank/foo/bar').create.snapshot('baz')
+			ZFS('tank/foo').snapshots.should eq [snapshot, snapshot2]
+
+			snapshot.destroy!
+			ZFS('tank/foo').snapshots.should eq [snapshot2]
+
+			ZFS('tank/foo').destroy!(children: true)
+
+			ZFS('tank/foo').should_not exist
+		end
+
+		it "should raise an exception if filesystem does not exist" do
+			expect { ZFS('tank/none').snapshots }.to raise_error(ZFS::NotFound)
+		end
+	end
+
+	describe "#children" do
+		before(:all) do
+			%w(tank/l1/ll1/lll1 tank/l1/ll2 tank/l2/ll2/lll2 tank/l3).each { |f| ZFS(f).create(parents: true) }
+		end
+
+		after(:all) do
+			%w(tank/l1 tank/l2 tank/l3).each { |f| ZFS(f).destroy!(children: true) }
+		end
+
+		it "should raise an exception if filesystem does not exist" do
+			expect { ZFS('tank/none').children }.to raise_error(ZFS::NotFound)
+		end
+
+		it "returns a list of immediate children" do
+			ZFS('tank/l1').children.should eq [ZFS('tank/l1/ll1'), ZFS('tank/l1/ll2')]
+			ZFS('tank').children.should eq [ZFS('tank/l1'), ZFS('tank/l2'), ZFS('tank/l3')]
+		end
+
+		it "returns a list of all children" do
+			ZFS('tank/l1').children(recursive: true).should eq [ZFS('tank/l1/ll1'), ZFS('tank/l1/ll1/lll1'), ZFS('tank/l1/ll2')]
+		end
+
+		it "does not include snapshots" do
+			ZFS('tank/l1').snapshot('test')
+			ZFS('tank/l1').children.should eq [ZFS('tank/l1/ll1'), ZFS('tank/l1/ll2')]
+		end
+	end
+
+	describe "#rename" do
+		it "renames filesystems" do
+			fs = ZFS('tank/foo').create
+			fs.rename!('tank/bar')
+
+			ZFS('tank/foo').should_not exist
+			ZFS('tank/bar').should exist
+			fs.should exist
+
+			fs.name.should eq "tank/bar"
+
+			fs.destroy!
+		end
+
+		it "renames filesystems and creates parents for new name" do
+			fs = ZFS('tank/foo').create
+			fs.rename!('tank/bar/baz/qux', parents: true)
+
+			ZFS('tank/foo').should_not exist
+			ZFS('tank/bar/baz/qux').should exist
+			fs.should exist
+
+			ZFS('tank/bar').destroy!(children: true)
+		end
+
+		it "renames snapshots" do
+			snapshot = ZFS('tank/foo').create.snapshot('foo')
+			snapshot.rename!('baz')
+			ZFS('tank/foo').snapshots.should eq [ZFS('tank/foo@baz')]
+			snapshot.name.should eq "tank/foo@baz"
+
+			ZFS('tank/foo').destroy!(children: true)
+		end
+
+		it "renames snapshots recursively" do
+			ZFS('tank/foo/bar/baz').create(parents: true)
+			ZFS('tank/foo').snapshot('bar', children: true)
+
+			ZFS('tank/foo/bar/baz@bar').should exist
+
+			ZFS('tank/foo@bar').rename!('foo', children: true)
+
+			ZFS('tank/foo/bar/baz@foo').should exist
+
+			ZFS('tank/foo').destroy!(children: true)
+		end
+
+		it "throws an exception when new name is already used" do
+			ZFS('tank/foo').create
+
+			# Rename filesystem
+			expect { ZFS('tank/bar').create.rename!('tank/foo') }.to raise_error ZFS::AlreadyExists
+
+			# Rename snapshot
+			snapshot = ZFS('tank/foo').snapshot('foo')
+			ZFS('tank/foo').snapshot('bar')
+			expect { snapshot.rename!('bar') }.to raise_error ZFS::AlreadyExists
+
+			ZFS('tank/foo').destroy!(children: true)
+			ZFS('tank/bar').destroy!
+		end
+	end
+
+	describe ".pools" do
+		it "returns an Array of all pools" do
+			ZFS.pools.should eq [ZFS('tank')]
+
+			# and only pools
+			ZFS('tank/foo').create
+			ZFS.pools.should eq [ZFS('tank')]
+			ZFS('tank/foo').destroy!
+		end
+	end
+
+	describe ".mounts" do
+		it "returns a Hash of all mountpoints" do
+			ZFS.mounts.should eq "/tank" => ZFS('tank')
+		end
+	end
+
+	describe "#[]" do
+		it "gets raw properties" do
+			ZFS('tank')['type'].should eq 'filesystem'
+		end
+	end
+
+	describe "#[]=" do
+		it "sets raw properties" do
+			ZFS('tank/foo').create
+			ZFS('tank/foo')['exec'].should eq 'on'
+			ZFS('tank/foo')['exec'] = 'off'
+			ZFS('tank/foo')['exec'].should eq 'off'
+			ZFS('tank/foo').destroy!
+		end
+	end
+
+	describe "properties" do
+		it "has helper functions" do
+			ZFS('tank').type.should eq :filesystem
+		end
+
+		it "gets correct types" do
+			ZFS('tank/foo').create
+			ZFS('tank/foo').exec?.should be_true
+			ZFS('tank/foo').origin.should be_nil
+			ZFS('tank/foo').creation.should be_an_instance_of DateTime
+			ZFS('tank/foo').referenced.should be_an_instance_of Fixnum
+			ZFS('tank/foo').mountpoint.should eq Pathname('/tank/foo')
+
+			ZFS('tank/foo').destroy!
+		end
+
+		it "sets correct types" do
+			ZFS('tank/foo').create
+			ZFS('tank/foo').exec?.should be_true
+			ZFS('tank/foo').exec = false
+			ZFS('tank/foo').exec?.should be_false
+
+		end
+	end
 end
 
-describe ZFS::Filesystem do
-  it "should be valid across destroy/re-create" do
-    fs = ZFS.create('tank/fs1')
-    fs.should be_an_instance_of ZFS::Filesystem
-    fs.should be_valid
-    fs.destroy!
-    fs.should_not be_valid
+# Now that we've tested properties, we should be able to test fetching by mountpoint
+describe "ZFS()" do
+	include_context "vagrant"
 
-    fs2 = ZFS.create('tank/fs1')
-    fs.should be_valid
-    fs.should eq fs2
-    fs.destroy!
-    fs.should_not be_valid
-  end
-end
-
-# Basic properties
-describe ZFS do
-  it "should support getting properties" do
-    fs = ZFS['tank']
-    fs.type.should eq :filesystem
-  end
-
-  it "should support setting properties"
-  it "should convert on/off to true/false, and vice-versa" do
-    ZFS['tank'].readonly?.should be_false
-    ZFS['tank'].canmount?.should be_true
-  end
-
-  it "should convert 'creation' to DateTime" do
-    ZFS['tank'].creation.should be_an_instance_of DateTime
-  end
-
-  it "should support custom properties"
-
-  describe ZFS::Filesystem do
-    it "should convert 'mountpoint' to Pathname" do
-      ZFS['tank'].mountpoint.should eq Pathname("/tank")
-    end
-  end
-end
-
-# Tests with more filesystems
-describe ZFS::Filesystem do
-  include_context "scratch-filesystem"
-
-  it "should be able to find specific filesystems" do
-    ZFS['/tank'].to_s.should eq '#<ZFS:tank>'
-    ZFS['/tank'].should eq ZFS['tank']
-
-    ZFS['/tank/fs1'].to_s.should eq '#<ZFS:tank/fs1>'
-    ZFS['/tank/fs1'].should eq ZFS['tank/fs1']
-    ZFS['/tank/fs1'].should_not eq ZFS['/tank/fs2']
-
-    # Find parent
-    ZFS['/tank/fs1/dir1', true].should eq ZFS['/tank/fs1']
-    ZFS['/tank/fs1/dir1', false].should be_nil
-  end
-end
-
-describe ZFS::Filesystem do
-  subject { ZFS['tank/fs1'] }
-
-  include_context "scratch-filesystem"
-
-  it "should support snapshots" do
-    subject.snapshots.should eq []
-    snapshot = subject.snapshot!('snap1')
-    snapshots = subject.snapshots
-    snapshot.should be_valid
-    snapshot.destroy!
-    snapshots.first.name.should eq 'tank/fs1@snap1'
-    snapshot.should_not be_valid
-
-    subject.snapshot!('snap1')
-    subject.snapshot!('snap2')
-    subject.snapshots.size.should eq 2
-    subject.snapshots.each do |snap|
-      snap.should be_an_instance_of ZFS::Snapshot
-      snap.destroy!
-    end
-  end
-
-  it "should support recursive snapshots" do
-    fs2 = subject.create('fs2')
-    fs3 = fs2.create('fs3')
-    subject.snapshot!('test', recursive: true)
-    ZFS['tank/fs1@test'].should_not be_nil
-    ZFS['tank/fs1/fs2@test'].should_not be_nil
-    ZFS['tank/fs1/fs2/fs3@test'].should_not be_nil
-    ZFS['tank/fs1/fs2/fs3@test'].destroy!
-    ZFS['tank/fs1/fs2/fs3'].destroy!
-    ZFS['tank/fs1/fs2@test'].destroy!
-    ZFS['tank/fs1/fs2'].destroy!
-    ZFS['tank/fs1@test'].destroy!
-  end
-
-  # FIXME: move to ZFS::Snapshot tests
-  it "should support clones" do
-    snapshot = subject.snapshot!('test')
-    clone = snapshot.clone!('tank/clonefs')
-    clone.should be_an_instance_of ZFS::Filesystem
-    clone.should eq ZFS['/tank/clonefs']
-
-    clone.origin.should eq snapshot
-
-    clone.destroy!
-    ZFS['/tank/clonefs'].should be_nil
-
-    snapshot.destroy!
-    subject.snapshots.should eq []
-  end
-
-  it "should fail when attempting to create an existing filesystem" do
-    expect { ZFS.create('tank/fs1') }.to raise_error("filesystem already exists")
-  end
-end
-
-describe ZFS::Filesystem do
-  it "supports renames" do
-    fs = ZFS.create('tank/fs1')
-    fs.rename!('tank/fs2')
-    fs.should eq ZFS['tank/fs2']
-    ZFS['tank/fs1'].should be_nil
-    fs.destroy!
-    fs.should_not be_valid
-    ZFS['tank/fs2'].should be_nil
-  end
+	it "takes a mountpoint as argument" do
+		ZFS('/tank').should eq ZFS('tank')
+		ZFS('/tank').name.should eq 'tank'
+		ZFS('tank/foo').create
+		ZFS('/tank/foo').should eq ZFS('tank/foo')
+		ZFS('tank/foo').destroy!
+	end
 end
 
 describe ZFS::Snapshot do
-  it "supports renames" do
-    fs = ZFS.create('tank/fs1')
-    snapshot = fs.snapshot!('snap1')
-    fs.snapshots.should eq [ZFS['tank/fs1@snap1']]
+	include_context "vagrant"
 
-    snapshot.rename!('snap2')
-    fs.snapshots.should eq [ZFS['tank/fs1@snap2']]
+	describe "#clone" do
+		it "raises an error when target already exists" do
+			snapshot = ZFS('tank/foo').create.snapshot('foo')
+			ZFS('tank/bar').create
 
-    snapshot.destroy!
-    fs.snapshots.should eq []
+			expect { snapshot.clone!('tank/bar') }.to raise_error ZFS::AlreadyExists
 
-    fs.destroy!
-  end
+			ZFS('tank/foo').destroy!(children: true)
+			ZFS('tank/bar').destroy!
+		end
 
-  it "should have a 'parent' property"
-  it "should have a 'send_to' method"
+		it "clones a snapshot to a filesystem" do
+			snapshot = ZFS('tank/foo').create.snapshot('foo')
+
+			fs = snapshot.clone!('tank/bar')
+			fs.should be_an_instance_of ZFS::Filesystem
+			fs.should exist
+			fs.should eq ZFS('tank/bar')
+
+			fs.destroy!
+			snapshot.destroy!
+			ZFS('tank/foo').destroy!
+		end
+
+		it "creates parent-filesystems when requested" do
+			snapshot = ZFS('tank/foo').create.snapshot('foo')
+
+			fs = snapshot.clone!('tank/bar/baz', parents: true)
+			fs.should be_an_instance_of ZFS::Filesystem
+			fs.should exist
+			fs.should eq ZFS('tank/bar/baz')
+
+			fs.destroy!
+			snapshot.destroy!
+			ZFS('tank/foo').destroy!
+			ZFS('tank/bar').destroy!(children: true)
+		end
+
+		it "returns a filesystem with a valid 'origin' property" do
+			snapshot = ZFS('tank/foo').create.snapshot('foo')
+
+			fs = snapshot.clone!('tank/bar')
+			fs.should be_an_instance_of ZFS::Filesystem
+			fs.origin.should eq snapshot
+
+			fs.destroy!
+			snapshot.destroy!
+			ZFS('tank/foo').destroy!
+		end
+
+		it "accepts a ZFS as a valid destination" do
+			snapshot = ZFS('tank/foo').create.snapshot('foo')
+
+			fs = snapshot.clone!(ZFS('tank/bar'))
+			fs.should be_an_instance_of ZFS::Filesystem
+			fs.origin.should eq snapshot
+
+			fs.destroy!
+			snapshot.destroy!
+			ZFS('tank/foo').destroy!
+		end
+	end
+
+	describe "#send_to" do
+		it "sends the snapshot to another filesystem"
+	end
+end
+
+describe ZFS::Filesystem do
+	include_context "vagrant"
+
+	describe "#promote!" do
+		it "promotes a clone" do
+			snapshot = ZFS('tank/foo').create.snapshot('foo')
+
+			fs = snapshot.clone!('tank/bar')
+			fs.origin.should eq snapshot
+
+			fs.promote!
+
+			fs.origin.should be_nil
+			snapshot.parent.origin.should eq fs + '@foo'
+
+			snapshot.parent.destroy!
+			fs.snapshots.first.destroy!
+			fs.destroy!
+		end
+
+		it "raises an error if filesystem is not a clone" do
+			expect { ZFS('tank/foo').create.promote! }.to raise_error ZFS::NotFound
+			ZFS('tank/foo').destroy!
+		end
+	end
 end

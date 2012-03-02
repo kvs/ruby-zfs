@@ -1,5 +1,7 @@
 source :rubygems
 
+gem "open4"
+
 group :development do
 	gem "rake"
 	gem "guard-bundler"
