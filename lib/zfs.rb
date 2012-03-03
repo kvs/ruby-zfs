@@ -388,11 +388,17 @@ class ZFS::Snapshot < ZFS
 
 		incr_snap = opts[:incremental] || opts[:intermediary]
 		if incr_snap
-			incr_snap = ZFS(incr_snap)
+			if incr_snap.is_a? String and incr_snap.match(/^@/)
+				incr_snap = self.parent + incr_snap
+			else
+				incr_snap = ZFS(incr_snap)
+				raise ArgumentError, "incremental snapshot must be in the same filesystem as #{self}" if incr_snap.parent != self.parent
+			end
+
 			snapname = incr_snap.name.sub(/^.+@/, '@')
 
 			raise NotFound, "destination must already exist when receiving incremental stream" unless dest.exist?
-			raise NotFound, "snapshot #{snapname} must exist at #{self}" if self.parent.snapshots.grep(ZFS(incr_snap)).empty?
+			raise NotFound, "snapshot #{snapname} must exist at #{self.parent}" if self.parent.snapshots.grep(incr_snap).empty?
 			raise NotFound, "snapshot #{snapname} must exist at #{dest}" if dest.snapshots.grep(dest + snapname).empty?
 		elsif opts[:use_sent_name]
 			raise NotFound, "destination must already exist when using sent name" unless dest.exist?

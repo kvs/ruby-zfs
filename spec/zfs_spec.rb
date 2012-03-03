@@ -435,9 +435,33 @@ describe ZFS::Snapshot do
 			expect { @sourcesnap.send_to(@dest1, incremental: @sourcesnap, intermediary: @sourcesnap) }.to raise_error ArgumentError
 		end
 
+		it "supports relative paths (Strings beginning with @) as incremental sources" do
+			@sourcesnap.send_to(@dest2)
+
+			snap2 = @source.snapshot('snapshot2')
+			snap2.send_to(@dest2, incremental: '@snapshot')
+			snap2.should exist
+			(@dest2 + '@snapshot2').should exist
+
+			snap3 = @source.snapshot('snapshot3')
+			snap3.send_to(@dest2, intermediary: '@snapshot')
+			snap3.should exist
+			(@dest2 + '@snapshot3').should exist
+
+			snap3.destroy!
+			snap2.destroy!
+			@dest2.destroy!(children: true)
+		end
+
+		it "raises an error if incremental snapshot isn't in the same filesystem as source" do
+			s = @dest1.snapshot('foo')
+			expect { @sourcesnap.send_to(@dest1, incremental: s) }.to raise_error ArgumentError
+			s.destroy!
+		end
+
 		it "raises an error when filesystems/snapshots don't exist" do
-			expect { @sourcesnap.send_to(@dest1, incremental: ZFS('tank/none')) }.to raise_error ZFS::NotFound
-			expect { @sourcesnap.send_to(@dest1, intermediary: ZFS('tank/none')) }.to raise_error ZFS::NotFound
+			expect { @sourcesnap.send_to(@dest1, incremental: ZFS('tank/foo@none')) }.to raise_error ZFS::NotFound
+			expect { @sourcesnap.send_to(@dest1, intermediary: ZFS('tank/foo@none')) }.to raise_error ZFS::NotFound
 			expect { @sourcesnap.send_to(@dest2, intermediary: @sourcesnap) }.to raise_error ZFS::NotFound
 		end
 
