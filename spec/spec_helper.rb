@@ -2,7 +2,7 @@
 $LOAD_PATH.push(File.expand_path('../lib/zfs'))
 
 require 'zfs'
-require 'open4'
+require 'open3'
 
 shared_context "vagrant" do
 	before(:all) do
@@ -11,8 +11,8 @@ shared_context "vagrant" do
 	end
 
 	after(:all) do
-		Open4::spawn([*ZFS.zfs_path]+['destroy -r tank/foo'], ignore_exit_failure: true)
-		Open4::spawn([*ZFS.zfs_path]+['destroy -r tank/bar'], ignore_exit_failure: true)
+		Open3.capture2e(*(ZFS.zfs_path+%w('destroy -r tank/foo'])))
+		Open3.capture2e(*(ZFS.zfs_path+%w('destroy -r tank/bar')))
 
 		ZFS.zfs_path   = 'zfs'
 		ZFS.zpool_path = 'zpool'

@@ -2,7 +2,7 @@
 
 require 'pathname'
 require 'date'
-require 'open4'
+require 'open3'
 
 # Get ZFS object.
 def ZFS(path)
@@ -51,27 +51,26 @@ class ZFS
 	def children(opts={})
 		raise NotFound if !exist?
 
-		stdout, stderr = [], []
 		cmd = [ZFS.zfs_path].flatten + %w(list -H -r -oname -tfilesystem)
 		cmd << '-d1' unless opts[:recursive]
 		cmd << name
 
-		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
-
-		stdout.shift # self
-		stdout.collect do |filesystem|
-			ZFS(filesystem.chomp)
+		stdout, stderr, status = Open3.capture3(*cmd)
+		if status.success? and stderr == ""
+			stdout.lines.drop(1).collect do |filesystem|
+				ZFS(filesystem.chomp)
+			end
+		else
+			raise Exception, "something went wrong"
 		end
 	end
 
 	# Does the filesystem exist?
 	def exist?
-		stdout, stderr = [], []
 		cmd = [ZFS.zfs_path].flatten + %w(list -H -oname) + [name]
 
-		Open4::spawn(cmd, stdout: stdout, stderr: stderr, ignore_exit_failure: true)
-
-		if stdout == ["#{name}\n"]
+		out, status = Open3.capture2e(*cmd)
+		if status.success? and out == "#{name}\n"
 			true
 		else
 			false
@@ -82,18 +81,18 @@ class ZFS
 	def create(opts={})
 		return nil if exist?
 
-		stdout, stderr = [], []
 		cmd = [ZFS.zfs_path].flatten + ['create']
 		cmd << '-p' if opts[:parents]
 		cmd += ['-V', opts[:volume]] if opts[:volume]
 		cmd << name
 
-		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
-
-		if stdout.empty? and stderr.empty?
+		out, status = Open3.capture2e(*cmd)
+		if status.success? and out.empty?
 			return self
+		elsif out.match(/dataset already exists\n$/)
+			nil
 		else
-			raise Exception, "something went wrong"
+			raise Exception, "something went wrong: #{out}, #{status}"
 		end
 	end
 
@@ -101,14 +100,13 @@ class ZFS
 	def destroy!(opts={})
 		raise NotFound if !exist?
 
-		stdout, stderr = [], []
 		cmd = [ZFS.zfs_path].flatten + ['destroy']
 		cmd << '-r' if opts[:children]
 		cmd << name
 
-		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+		out, status = Open3.capture2e(*cmd)
 
-		if stdout.empty? and stderr.empty?
+		if status.success? and out.empty?
 			return true
 		else
 			raise Exception, "something went wrong"
@@ -126,25 +124,23 @@ class ZFS
 	end
 
 	def [](key)
-		stdout, stderr = [], []
 		cmd = [ZFS.zfs_path].flatten + %w(get -ovalue -Hp) + [key.to_s, name]
 
-		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+		stdout, stderr, status = Open3.capture3(*cmd)
 
-		if stderr.empty? and stdout.size == 1
-			return stdout.first.chomp
+		if status.success? and stderr.empty? and stdout.lines.count == 1
+			return stdout.chomp
 		else
 			raise Exception, "something went wrong"
 		end
 	end
 
 	def []=(key, value)
-		stdout, stderr = [], []
 		cmd = [ZFS.zfs_path].flatten + ['set', "#{key.to_s}=#{value}", name]
 
-		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+		out, status = Open3.capture2e(*cmd)
 
-		if stderr.empty? and stdout.empty?
+		if status.success? and out.empty?
 			return value
 		else
 			raise Exception, "something went wrong"
@@ -157,28 +153,34 @@ class ZFS
 
 		# Get an Array of all pools
 		def pools
-			stdout, stderr = [], []
 			cmd = [ZFS.zpool_path].flatten + %w(list -Honame)
 
-			Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+			stdout, stderr, status = Open3.capture3(*cmd)
 
-			stdout.collect do |pool|
-				ZFS(pool.chomp)
+			if status.success? and stderr.empty?
+				stdout.lines.collect do |pool|
+					ZFS(pool.chomp)
+				end
+			else
+				raise Exception, "something went wrong"
 			end
 		end
 
 		# Get a Hash of all mountpoints and their filesystems
 		def mounts
-			stdout, stderr = [], []
 			cmd = [ZFS.zfs_path].flatten + %w(get -rHp -oname,value mountpoint)
 
-			Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+			stdout, stderr, status = Open3.capture3(*cmd)
 
-			mounts = stdout.collect do |line|
-				fs, path = line.chomp.split(/\t/, 2)
-				[path, ZFS(fs)]
+			if status.success? and stderr.empty?
+				mounts = stdout.lines.collect do |line|
+					fs, path = line.chomp.split(/\t/, 2)
+					[path, ZFS(fs)]
+				end
+				Hash[mounts]
+			else
+				raise Exception, "something went wrong"
 			end
-			Hash[mounts]
 		end
 
 		# Define an attribute
@@ -340,15 +342,14 @@ class ZFS::Snapshot < ZFS
 
 		newname = (parent + "@#{newname}").name
 
-		stdout, stderr = [], []
 		cmd = [ZFS.zfs_path].flatten + ['rename']
 		cmd << '-r' if opts[:children]
 		cmd << name
 		cmd << newname
 
-		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+		out, status = Open3.capture2e(*cmd)
 
-		if stdout.empty? and stderr.empty?
+		if status.success? and out.empty?
 			initialize(newname)
 			return self
 		else
@@ -362,15 +363,14 @@ class ZFS::Snapshot < ZFS
 
 		raise AlreadyExists if ZFS(clone).exist?
 
-		stdout, stderr = [], []
 		cmd = [ZFS.zfs_path].flatten + ['clone']
 		cmd << '-p' if opts[:parents]
 		cmd << name
 		cmd << clone
 
-		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+		out, status = Open3.capture2e(*cmd)
 
-		if stdout.empty? and stderr.empty?
+		if status.success? and out.empty?
 			return ZFS(clone)
 		else
 			raise Exception, "something went wrong"
@@ -419,8 +419,8 @@ class ZFS::Snapshot < ZFS
 		receive_opts << '-d' if opts[:use_sent_name]
 		receive_opts << dest
 
-		Open4::popen4(*receive_opts) do |rpid, rstdin, rstdout, rstderr|
-			Open4::popen4(*send_opts) do |spid, sstdin, sstdout, sstderr|
+		Open3.popen3(*receive_opts) do |rstdin, rstdout, rstderr, rthr|
+			Open3.popen3(*send_opts) do |sstdin, sstdout, sstderr, sthr|
 				while !sstdout.eof?
 					rstdin.write(sstdout.read(16384))
 				end
@@ -446,15 +446,14 @@ class ZFS::Filesystem < ZFS
 	def rename!(newname, opts={})
 		raise AlreadyExists if ZFS(newname).exist?
 
-		stdout, stderr = [], []
 		cmd = [ZFS.zfs_path].flatten + ['rename']
 		cmd << '-p' if opts[:parents]
 		cmd << name
 		cmd << newname
 
-		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+		out, status = Open3.capture2e(*cmd)
 
-		if stdout.empty? and stderr.empty?
+		if status.success? and out.empty?
 			initialize(newname)
 			return self
 		else
@@ -467,14 +466,13 @@ class ZFS::Filesystem < ZFS
 		raise NotFound, "no such filesystem" if !exist?
 		raise AlreadyExists, "#{snapname} exists" if ZFS("#{name}@#{snapname}").exist?
 
-		stdout, stderr = [], []
 		cmd = [ZFS.zfs_path].flatten + ['snapshot']
 		cmd << '-r' if opts[:children]
 		cmd << "#{name}@#{snapname}"
 
-		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+		out, status = Open3.capture2e(*cmd)
 
-		if stdout.empty? and stderr.empty?
+		if status.success? and out.empty?
 			return ZFS("#{name}@#{snapname}")
 		else
 			raise Exception, "something went wrong"
@@ -488,10 +486,14 @@ class ZFS::Filesystem < ZFS
 		stdout, stderr = [], []
 		cmd = [ZFS.zfs_path].flatten + %w(list -H -d1 -r -oname -tsnapshot) + [name]
 
-		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+		stdout, stderr, status = Open3.capture3(*cmd)
 
-		stdout.collect do |snap|
-			ZFS(snap.chomp)
+		if status.success? and stderr.empty?
+			stdout.lines.collect do |snap|
+				ZFS(snap.chomp)
+			end
+		else
+			raise Exception, "something went wrong"
 		end
 	end
 
@@ -499,12 +501,11 @@ class ZFS::Filesystem < ZFS
 	def promote!
 		raise NotFound, "filesystem is not a clone" if self.origin.nil?
 
-		stdout, stderr = [], []
 		cmd = [ZFS.zfs_path].flatten + ['promote', name]
 
-		Open4::spawn(cmd, stdout: stdout, stderr: stderr)
+		out, status = Open3.capture2e(*cmd)
 
-		if stdout.empty? and stderr.empty?
+		if status.success? and out.empty?
 			return self
 		else
 			raise Exception, "something went wrong"
