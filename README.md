@@ -78,7 +78,7 @@ Uses a Vagrant VM with a custom Ubuntu + ZFS-on-Linux to do all the practical te
 
 To get up and running, do the following:
 
-* Install Vagrant (`gem install vagrant`, download a package, or add it to the Gemfile - your choice)
+* Install Vagrant (with Bundler, as a system gem, or as a package - your choice)
 * Install [vagrant-proxyssh](https://github.com/kvs/vagrant-proxyssh)
 * Run `rake bundle` to install gems inside the Vagrant VM
 * Run `rake guard` to fire up [guard](https://github.com/guard/guard), and run tests inside the Vagrant VM.
