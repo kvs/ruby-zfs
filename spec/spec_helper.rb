@@ -6,8 +6,8 @@ require 'open3'
 
 shared_context "vagrant" do
 	before(:all) do
-		ZFS.zfs_path   = %w(ssh vagrant sudo zfs)
-		ZFS.zpool_path = %w(ssh vagrant sudo zpool)
+		ZFS.zfs_path   = %w(sudo zfs)
+		ZFS.zpool_path = %w(sudo zpool)
 	end
 
 	after(:all) do

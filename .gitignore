@@ -1,4 +1,5 @@
 .bundle
+.guard_private
 .vagrant
 Gemfile.lock
 test.rb

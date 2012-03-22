@@ -20,7 +20,6 @@ Gem::Specification.new do |s|
 	s.add_development_dependency "rspec", ["~> 2.9.0"]
 	s.add_development_dependency "guard-rspec"
 	s.add_development_dependency "guard-bundler"
+	s.add_development_dependency "ruby_gntp"
 	s.add_development_dependency "rake"
-	s.add_development_dependency "vagrant"
-	s.add_development_dependency "vagrant-proxyssh"
 end
