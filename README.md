@@ -76,12 +76,17 @@ ZFS is mutable, and contains potentially very destructive methods.
 
 Uses a Vagrant VM with a custom Ubuntu + ZFS-on-Linux to do all the practical tests, to avoid thrashing any local ZFS-installations.
 
+To get up and running, do the following:
+
+* Install Vagrant (`gem install vagrant`, download a package, or add it to the Gemfile - your choice)
+* Install [vagrant-proxyssh](https://github.com/kvs/vagrant-proxyssh)
+* Run `rake bundle` to install gems inside the Vagrant VM
+* Run `rake guard` to fire up [guard](https://github.com/guard/guard), and run tests inside the Vagrant VM.
+
+Optional: add custom notification options to `.guardfile_private`.
+
 
 ## Bugs
 
 * Currently, ZFS-objects aren't cached, so two instances can refer to the same filesystem. If mutable actions are called, only one is updated to reflect. (eg. rename!)
 * Many commands take options, but do not warn/error if given invalid options
-
-## Todo
-
-* Support remote systems by prepending zfs/zpool-command with "ssh #{host}"
