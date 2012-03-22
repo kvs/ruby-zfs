@@ -7,5 +7,5 @@ end
 
 desc "Login to Vagrant, and run 'guard'"
 task :guard do
-  exec "ssh", "-t", "vagrant", 'source /etc/profile && cd /vagrant && bundle exec guard'
+  exec "ssh", "-t", "vagrant", 'source /etc/profile && cd /vagrant && bundle exec guard -c'
 end
